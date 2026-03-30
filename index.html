@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Last Cartographer</title>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: #03020a;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<script>
+'use strict';
+
+// =============================================================================
+//  ASSET NOTES  (measured dimensions)
+//
+//  world_bg.png          512 × 512  →  stretched to 800×600 with setDisplaySize
+//  player/maren/theo     512 × 768  →  3 cols × 4 rows  frameWidth:170 frameHeight:192
+//  portrait images       512 × 768  →  exact 2:3 ratio  displayed at 144 × 216
+//
+//  KNOWN LIMITATION: Spritesheets were generated with solid black backgrounds.
+//  On this dark tavern floor the effect is mostly hidden, but for clean
+//  transparency open each _sheet.png in an image editor and replace #000000
+//  with full transparency.
+//
+//  portrait_aldric faces LEFT in the source image (AI didn't respect the brief).
+//  Code compensates by calling setFlipX(true) on the left portrait slot so
+//  Aldric faces the NPC on the right. No image editing required.
+//
+//  512 / 3 = 170.67 — frameWidth:170 clips the rightmost 2 px of right-column
+//  frames. At 0.32 render scale this is < 1 screen-pixel; invisible in play.
+// =============================================================================
+
+// =============================================================================
+//  STORY DATABASE
+//  Extend freely — just push more objects into each array, or add new NPC keys.
+// =============================================================================
+const STORY = {
+
+  maren: [
+    { speaker: "Maren Vael",  portrait: "portrait_maren",  side: "right",
+      text: "You're awake. Three days, Aldric. I was starting to wonder if I'd have to call the grave-digger." },
+    { speaker: "Aldric Voss", portrait: "portrait_aldric", side: "left",
+      text: "Three days? My mouth tastes like bilge water. What... what happened to me?" },
+    { speaker: "Maren Vael",  portrait: "portrait_maren",  side: "right",
+      text: "Dock-hands found you face-down in the mud near Pier Seven. Clutching a burned scrap of paper like your life depended on it." },
+    { speaker: "Aldric Voss", portrait: "portrait_aldric", side: "left",
+      text: "The map. Do I still have it?" },
+    { speaker: "Maren Vael",  portrait: "portrait_maren",  side: "right",
+      text: "In your coat pocket. I don't touch a cartographer's papers — I know better than that." },
+    { speaker: "Maren Vael",  portrait: "portrait_maren",  side: "right",
+      text: "But I'll say this for free: whatever is on that scrap has people nervous. Three men have come asking after you since yesterday. They didn't leave names." },
+    { speaker: "Aldric Voss", portrait: "portrait_aldric", side: "left",
+      text: "What did they look like?" },
+    { speaker: "Maren Vael",  portrait: "portrait_maren",  side: "right",
+      text: "Like money. And trouble. In my experience those two always travel together. Watch yourself, Aldric — Velmoor is not a forgiving town." },
+  ],
+
+  theo: [
+    { speaker: "Theo Ashby",  portrait: "portrait_theo",   side: "right",
+      text: "Hey — you're the map-man, right? The one they dragged off the docks?" },
+    { speaker: "Aldric Voss", portrait: "portrait_aldric", side: "left",
+      text: "Apparently. You were there that night?" },
+    { speaker: "Theo Ashby",  portrait: "portrait_theo",   side: "right",
+      text: "Not when they found you. But I saw you earlier — on the east pier. Arguing with someone. The wind was bad. I couldn't make out words." },
+    { speaker: "Aldric Voss", portrait: "portrait_aldric", side: "left",
+      text: "Who were they?" },
+    { speaker: "Theo Ashby",  portrait: "portrait_theo",   side: "right",
+      text: "Strangers. But after you went down, they walked up the gangway of the Merewyn — calm as you like. She cast off before dawn." },
+    { speaker: "Aldric Voss", portrait: "portrait_aldric", side: "left",
+      text: "The Merewyn. That's the merchant vessel that went missing." },
+    { speaker: "Theo Ashby",  portrait: "portrait_theo",   side: "right",
+      text: "Gone three days. Same as you were out cold." },
+    { speaker: "Theo Ashby",  portrait: "portrait_theo",   side: "right",
+      text: "Look — I hid something for you under the loose board by the south breakwater. Go alone. The Harbour Master has eyes everywhere." },
+  ],
+};
+
+
+// =============================================================================
+//  PRELOAD SCENE
+// =============================================================================
+class PreloadScene extends Phaser.Scene {
+  constructor() { super({ key: 'PreloadScene' }); }
+
+  preload() {
+    const W = this.scale.width;
+    const H = this.scale.height;
+
+    const barW = 380;
+    this.add.rectangle(W/2, H/2, barW+6, 16, 0x100c06);
+    const bar = this.add.rectangle(W/2 - barW/2, H/2, 0, 10, 0xc8902a).setOrigin(0, 0.5);
+    this.add.text(W/2, H/2 - 52, 'THE  LAST  CARTOGRAPHER', {
+      fontFamily: 'Georgia, "Times New Roman", serif',
+      fontSize: '21px', color: '#c8902a', letterSpacing: 4,
+    }).setOrigin(0.5);
+    this.add.text(W/2, H/2 + 34, 'Loading…', {
+      fontFamily: 'Georgia, serif', fontSize: '12px', color: '#3d2e16',
+    }).setOrigin(0.5);
+
+    this.load.on('progress', v => { bar.width = barW * v; });
+
+    // 512×512 — stretched to 800×600 in GameScene
+    this.load.image('world_bg', 'assets/world_bg.png');
+
+    // 512×768 — 3 cols × 4 rows — frameWidth:170, frameHeight:192
+    const fc = { frameWidth: 170, frameHeight: 192 };
+    this.load.spritesheet('player_sheet', 'assets/player_sheet.png', fc);
+    this.load.spritesheet('maren_sheet',  'assets/maren_sheet.png',  fc);
+    this.load.spritesheet('theo_sheet',   'assets/theo_sheet.png',   fc);
+
+    // 512×768 — displayed at 144×216 (exact 2:3, no distortion)
+    this.load.image('portrait_aldric', 'assets/portrait_aldric.png');
+    this.load.image('portrait_maren',  'assets/portrait_maren.png');
+    this.load.image('portrait_theo',   'assets/portrait_theo.png');
+  }
+
+  create() {
+    this.time.delayedCall(350, () => this.scene.start('TitleScene'));
+  }
+}
+
+
+// =============================================================================
+//  TITLE SCENE
+// =============================================================================
+class TitleScene extends Phaser.Scene {
+  constructor() { super({ key: 'TitleScene' }); }
+
+  create() {
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this.cameras.main.setBackgroundColor('#03020a');
+
+    const g = this.add.graphics();
+    g.lineStyle(1, 0x2a1e0a, 1);
+    g.lineBetween(W/2-260, H/2+8,  W/2+260, H/2+8);
+    g.lineBetween(W/2-260, H/2+98, W/2+260, H/2+98);
+    g.lineStyle(1, 0x180e04, 1);
+    g.lineBetween(W/2-256, H/2+12,  W/2+256, H/2+12);
+    g.lineBetween(W/2-256, H/2+94, W/2+256, H/2+94);
+
+    this.add.text(W/2, H/2+34, 'THE  LAST  CARTOGRAPHER', {
+      fontFamily: 'Georgia, "Times New Roman", serif',
+      fontSize: '30px', color: '#c8902a', letterSpacing: 5,
+    }).setOrigin(0.5);
+
+    this.add.text(W/2, H/2+68, 'A  Story  of  Fog,  Salt,  and  Forgotten  Maps', {
+      fontFamily: 'Georgia, serif', fontSize: '13px',
+      color: '#6b4e24', fontStyle: 'italic', letterSpacing: 1,
+    }).setOrigin(0.5);
+
+    const hint = this.add.text(W/2, H-66, 'Press any key or click to begin', {
+      fontFamily: 'Georgia, serif', fontSize: '13px', color: '#3d2e16',
+    }).setOrigin(0.5);
+    this.tweens.add({ targets: hint, alpha: 0.08, duration: 950, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+    this.add.text(W/2, H-22, '"I drew maps of places that didn\'t exist — until one day, one of them did."', {
+      fontFamily: 'Georgia, serif', fontSize: '11px', color: '#1e150a', fontStyle: 'italic',
+    }).setOrigin(0.5);
+
+    const go = () => {
+      this.cameras.main.fadeOut(700, 0, 0, 0);
+      this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('GameScene'));
+    };
+    this.input.keyboard.once('keydown', go);
+    this.input.once('pointerdown', go);
+  }
+}
+
+
+// =============================================================================
+//  GAME SCENE
+// =============================================================================
+class GameScene extends Phaser.Scene {
+  constructor() { super({ key: 'GameScene' }); }
+
+  create() {
+    const W = this.scale.width;   // 800
+    const H = this.scale.height;  // 600
+
+    // ── Background ────────────────────────────────────────────────────────────
+    // Source 512×512 — setDisplaySize stretches to fill 800×600
+    this.add.image(0, 0, 'world_bg')
+      .setOrigin(0, 0)
+      .setDisplaySize(800, 600)
+      .setDepth(0);
+
+    // ── Collision geometry ────────────────────────────────────────────────────
+    // Zones calibrated to match the stretched 800×600 rendering of world_bg.
+    // The tavern image shows: bar counter top-center, two tables on the right,
+    // fireplace at lower-left, and open floor in the center/bottom third.
+    // [centerX, centerY, width, height]
+    this.wallGroup = this.physics.add.staticGroup();
+    [
+      // Canvas borders
+      [400,   4,  800,   8],   // top
+      [400, 596,  800,   8],   // bottom
+      [  4, 300,    8, 600],   // left
+      [796, 300,    8, 600],   // right
+      // Bar counter (spans most of top width, ~y 95–180 in stretched bg)
+      [400, 142,  700,  88],
+      // Upper-right table (visible in bg)
+      [610, 268,  115,  60],
+      // Lower-right table
+      [595, 420,  115,  58],
+    ].forEach(([cx, cy, w, h]) => {
+      const r = this.add.rectangle(cx, cy, w, h, 0xff0000, 0).setDepth(1);
+      this.physics.add.existing(r, true);
+      this.wallGroup.add(r);
+    });
+
+    // ── Animations ────────────────────────────────────────────────────────────
+    // Row 0 → DOWN (frames 0-2), Row 1 → LEFT (3-5)
+    // Row 2 → RIGHT (6-8),       Row 3 → UP (9-11)
+    const def = (key, sheet, s, e, fr) => {
+      if (!this.anims.exists(key))
+        this.anims.create({
+          key, frames: this.anims.generateFrameNumbers(sheet, { start: s, end: e }),
+          frameRate: fr, repeat: -1,
+        });
+    };
+    def('p_down',  'player_sheet', 0,  2, 8);
+    def('p_left',  'player_sheet', 3,  5, 8);
+    def('p_right', 'player_sheet', 6,  8, 8);
+    def('p_up',    'player_sheet', 9, 11, 8);
+    if (!this.anims.exists('p_idle'))
+      this.anims.create({ key: 'p_idle', frames: [{ key: 'player_sheet', frame: 1 }] });
+
+    def('maren_idle', 'maren_sheet', 1, 1, 1);
+    def('theo_idle',  'theo_sheet',  1, 1, 1);
+
+    // ── Player sprite ─────────────────────────────────────────────────────────
+    // Frame 170×192 local px.  Scale 0.32 → rendered ~54×61 px on screen.
+    // Physics body in LOCAL sprite coords:  80 wide × 36 tall, offset to feet.
+    this.player = this.physics.add.sprite(400, 490, 'player_sheet')
+      .setScale(0.32)
+      .setCollideWorldBounds(true);
+    this.player.setSize(80, 36).setOffset(45, 150);
+    this.player.anims.play('p_idle');
+
+    // ── NPC sprites ───────────────────────────────────────────────────────────
+    // Maren: behind bar area (y=210 keeps her just below the counter collision)
+    this.npcMaren = this._makeNPC(400, 210, 'maren_sheet', 'maren_idle', 'maren', 'Maren Vael');
+    // Theo: left-center open floor
+    this.npcTheo  = this._makeNPC(295, 455, 'theo_sheet',  'theo_idle',  'theo',  'Theo Ashby');
+    this.npcs     = [this.npcMaren, this.npcTheo];
+
+    // ── Physics colliders ─────────────────────────────────────────────────────
+    this.physics.add.collider(this.player, this.wallGroup);
+    this.physics.add.collider(this.player, this.npcMaren);
+    this.physics.add.collider(this.player, this.npcTheo);
+
+    // ── Interaction prompt ────────────────────────────────────────────────────
+    this.promptText = this.add.text(0, 0, '[ SPACE ]', {
+      fontFamily: 'Georgia, serif', fontSize: '11px',
+      color: '#f0d060', stroke: '#000', strokeThickness: 3, resolution: 2,
+    }).setOrigin(0.5).setDepth(500).setVisible(false);
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+    this.keys = this.input.keyboard.addKeys({
+      up:       Phaser.Input.Keyboard.KeyCodes.W,
+      down:     Phaser.Input.Keyboard.KeyCodes.S,
+      left:     Phaser.Input.Keyboard.KeyCodes.A,
+      right:    Phaser.Input.Keyboard.KeyCodes.D,
+      interact: Phaser.Input.Keyboard.KeyCodes.SPACE,
+    });
+
+    // ── Dialogue ──────────────────────────────────────────────────────────────
+    this.dlg = { active: false, lines: [], index: 0, typing: false, full: '', timer: null };
+    this._buildDialogueUI();
+    this.input.keyboard.on('keydown-SPACE', () => {
+      if (!this.dlg.active) return;
+      if (this.dlg.typing) this._finishTyping();
+      else                 this._nextLine();
+    });
+
+    // ── Intro fade + location card ────────────────────────────────────────────
+    this.cameras.main.fadeIn(900, 0, 0, 0);
+    const locTitle = this.add.text(W/2, H/2-28, 'The Rusted Anchor Inn', {
+      fontFamily: 'Georgia, serif', fontSize: '22px', color: '#c8902a', fontStyle: 'italic',
+    }).setOrigin(0.5).setAlpha(0).setDepth(900);
+    const locSub = this.add.text(W/2, H/2+12, 'PORT  OF  VELMOOR', {
+      fontFamily: 'Georgia, serif', fontSize: '11px', color: '#5a3e18', letterSpacing: 4,
+    }).setOrigin(0.5).setAlpha(0).setDepth(900);
+    this.tweens.add({
+      targets: [locTitle, locSub], alpha: 1,
+      duration: 1100, delay: 600, yoyo: true, hold: 2200,
+      ease: 'Sine.easeInOut',
+      onComplete: () => { locTitle.destroy(); locSub.destroy(); }
+    });
+  }
+
+  // ── NPC factory ──────────────────────────────────────────────────────────────
+  _makeNPC(x, y, sheet, animKey, dialogueKey, name) {
+    const npc = this.physics.add.sprite(x, y, sheet)
+      .setScale(0.32)
+      .setImmovable(true);
+    npc.setSize(80, 36).setOffset(45, 150);
+    npc.dialogueKey = dialogueKey;
+    npc.displayName = name;
+    npc.anims.play(animKey);
+    npc.nameTag = this.add.text(x, y - 40, name, {
+      fontFamily: 'Georgia, serif', fontSize: '10px',
+      color: '#e8d5a3', stroke: '#000000', strokeThickness: 3, resolution: 2,
+    }).setOrigin(0.5).setDepth(400);
+    return npc;
+  }
+
+  // ── Build dialogue UI (called once) ──────────────────────────────────────────
+  //
+  //  Portrait size: 144 × 216  (exactly 2:3 — same ratio as source 512×768 images)
+  //  So portraits are rendered pixel-perfect with zero aspect-ratio distortion.
+  //
+  //  Canvas: 800 × 600
+  //
+  //   y=378 ┌─────────────┐                    ┌─────────────┐
+  //         │  portrait L │  Speaker Name       │  portrait R │
+  //         │  144 × 216  │  ──────────         │  144 × 216  │
+  //   y=424 │             ├────────────────────-┤             │  ← box top
+  //         │             │   Dialogue body     │             │
+  //   y=594 └─────────────┘                    └─────────────┘  ← box bottom
+  _buildDialogueUI() {
+    const W   = this.scale.width;
+    const H   = this.scale.height;
+    const PW  = 144;
+    const PH  = 216;           // exact 2:3 ratio matches 512×768 source images
+    const PORT_Y = H - PH - 6; // 378
+    const BOX_Y  = PORT_Y + 46; // 424
+    const BOX_H  = H - BOX_Y - 6; // 170
+    const L_X    = 6;
+    const R_X    = W - 6 - PW; // 650
+    const TXT_X  = L_X + PW + 14; // 164
+    const TXT_W  = R_X - TXT_X - 14; // 472
+
+    this._dlg = { PW, PH, PORT_Y, BOX_Y, BOX_H, L_X, R_X, TXT_X, TXT_W };
+
+    // Dim overlay
+    this.dlgDim = this.add.rectangle(W/2, H/2, W, H, 0x000000, 0.42)
+      .setDepth(198).setVisible(false);
+
+    // Box + portrait frame graphics
+    this.dlgBoxGfx  = this.add.graphics().setDepth(200).setVisible(false);
+    this.dlgLPortGfx = this.add.graphics().setDepth(201).setVisible(false);
+    this.dlgRPortGfx = this.add.graphics().setDepth(201).setVisible(false);
+
+    // ── Left portrait (Aldric / player) ──────────────────────────────────────
+    // The source portrait_aldric.png faces LEFT.  setFlipX(true) mirrors it
+    // so he faces RIGHT toward the NPC — no image editing needed.
+    this.dlgLPortImg = this.add.image(L_X + PW/2, PORT_Y + PH/2, 'portrait_aldric')
+      .setDisplaySize(PW, PH)
+      .setFlipX(true)
+      .setDepth(202).setVisible(false);
+
+    // ── Right portrait (NPC) — faces LEFT by default, looking at player ───────
+    this.dlgRPortImg = this.add.image(R_X + PW/2, PORT_Y + PH/2, 'portrait_maren')
+      .setDisplaySize(PW, PH)
+      .setDepth(202).setVisible(false);
+
+    // Speaker name
+    this.dlgName = this.add.text(TXT_X, BOX_Y + 13, '', {
+      fontFamily: 'Georgia, "Times New Roman", serif',
+      fontSize: '16px', color: '#d4a040', fontStyle: 'bold', resolution: 2,
+    }).setDepth(203).setVisible(false);
+
+    // Thin rule beneath name
+    this.dlgRule = this.add.graphics().setDepth(203).setVisible(false);
+
+    // Body text
+    this.dlgBody = this.add.text(TXT_X, BOX_Y + 38, '', {
+      fontFamily: 'Georgia, "Times New Roman", serif',
+      fontSize: '15px', color: '#ddd5c0',
+      wordWrap: { width: TXT_W }, lineSpacing: 7, resolution: 2,
+    }).setDepth(203).setVisible(false);
+
+    // Continue hint (pulsing)
+    this.dlgHint = this.add.text(W - 20, H - 14, '▸  SPACE', {
+      fontFamily: 'Georgia, serif', fontSize: '11px',
+      color: '#5a3e18', fontStyle: 'italic', resolution: 2,
+    }).setOrigin(1, 1).setDepth(203).setVisible(false);
+    this.tweens.add({
+      targets: this.dlgHint, alpha: 0.12,
+      duration: 720, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
+
+    this._dlgElems = [
+      this.dlgDim, this.dlgBoxGfx,
+      this.dlgLPortGfx, this.dlgRPortGfx,
+      this.dlgLPortImg, this.dlgRPortImg,
+      this.dlgName, this.dlgRule, this.dlgBody, this.dlgHint,
+    ];
+
+    this._paintDlgStatics();
+  }
+
+  _paintDlgStatics() {
+    const { PW, PH, PORT_Y, BOX_Y, BOX_H, L_X, R_X } = this._dlg;
+    const W = this.scale.width;
+
+    // Main dialogue box
+    this.dlgBoxGfx.clear();
+    this.dlgBoxGfx.fillStyle(0x06050e, 0.96);
+    this.dlgBoxGfx.fillRoundedRect(6, BOX_Y, W-12, BOX_H, 7);
+    this.dlgBoxGfx.lineStyle(1.5, 0x3c2c14, 1);
+    this.dlgBoxGfx.strokeRoundedRect(6, BOX_Y, W-12, BOX_H, 7);
+    this.dlgBoxGfx.lineStyle(1, 0x1e1208, 0.8);
+    this.dlgBoxGfx.strokeRoundedRect(10, BOX_Y+3, W-20, BOX_H-6, 5);
+    this.dlgBoxGfx.lineStyle(1, 0x4a3418, 0.5);
+    this.dlgBoxGfx.lineBetween(16, BOX_Y+1.5, W-16, BOX_Y+1.5);
+
+    // Left portrait frame
+    [this.dlgLPortGfx, L_X].forEach(() => {}); // ensure scoped
+    this.dlgLPortGfx.clear();
+    this.dlgLPortGfx.fillStyle(0x000000, 0.4);
+    this.dlgLPortGfx.fillRect(L_X+4, PORT_Y+4, PW, PH);
+    this.dlgLPortGfx.fillStyle(0x030210, 1);
+    this.dlgLPortGfx.fillRect(L_X, PORT_Y, PW, PH);
+    this.dlgLPortGfx.lineStyle(1.5, 0x3c2c14, 1);
+    this.dlgLPortGfx.strokeRect(L_X, PORT_Y, PW, PH);
+    this.dlgLPortGfx.lineStyle(1, 0x1e1208, 0.7);
+    this.dlgLPortGfx.strokeRect(L_X+3, PORT_Y+3, PW-6, PH-6);
+
+    // Right portrait frame
+    this.dlgRPortGfx.clear();
+    this.dlgRPortGfx.fillStyle(0x000000, 0.4);
+    this.dlgRPortGfx.fillRect(R_X+4, PORT_Y+4, PW, PH);
+    this.dlgRPortGfx.fillStyle(0x030210, 1);
+    this.dlgRPortGfx.fillRect(R_X, PORT_Y, PW, PH);
+    this.dlgRPortGfx.lineStyle(1.5, 0x3c2c14, 1);
+    this.dlgRPortGfx.strokeRect(R_X, PORT_Y, PW, PH);
+    this.dlgRPortGfx.lineStyle(1, 0x1e1208, 0.7);
+    this.dlgRPortGfx.strokeRect(R_X+3, PORT_Y+3, PW-6, PH-6);
+  }
+
+  // ── Dialogue control ──────────────────────────────────────────────────────────
+  _startDialogue(npc) {
+    const lines = STORY[npc.dialogueKey];
+    if (!lines || this.dlg.active) return;
+
+    this.dlg.active = true;
+    this.dlg.lines  = lines;
+    this.dlg.index  = 0;
+
+    this.player.setVelocity(0, 0);
+    this._dlgElems.forEach(e => e.setVisible(true));
+    this.dlgHint.setVisible(false);
+
+    // Both portraits start dimmed; _showLine lights the speaker
+    this.dlgLPortImg.setTexture('portrait_aldric').setFlipX(true).setAlpha(0.35);
+    const npcPortrait = lines.find(l => l.side === 'right')?.portrait ?? 'portrait_maren';
+    this.dlgRPortImg.setTexture(npcPortrait).setAlpha(0.35);
+
+    this._showLine(lines[0]);
+  }
+
+  _showLine(line) {
+    const { TXT_X, BOX_Y } = this._dlg;
+
+    if (line.side === 'left') {
+      this.tweens.add({ targets: this.dlgLPortImg, alpha: 1,    duration: 200, ease: 'Sine.easeOut' });
+      this.tweens.add({ targets: this.dlgRPortImg, alpha: 0.35, duration: 200, ease: 'Sine.easeOut' });
+    } else {
+      this.dlgRPortImg.setTexture(line.portrait);
+      this.tweens.add({ targets: this.dlgRPortImg, alpha: 1,    duration: 200, ease: 'Sine.easeOut' });
+      this.tweens.add({ targets: this.dlgLPortImg, alpha: 0.35, duration: 200, ease: 'Sine.easeOut' });
+    }
+
+    this.dlgName.setText(line.speaker);
+    this.dlgRule.clear();
+    this.dlgRule.lineStyle(1, 0x3c2c14, 0.9);
+    this.dlgRule.lineBetween(TXT_X, BOX_Y+33, TXT_X + this.dlgName.width + 12, BOX_Y+33);
+
+    this.dlgBody.setText('');
+    this.dlgHint.setVisible(false);
+    this._typewrite(line.text);
+  }
+
+  _typewrite(text) {
+    this.dlg.typing = true;
+    this.dlg.full   = text;
+    if (this.dlg.timer) this.dlg.timer.remove(false);
+    let i = 0;
+    this.dlg.timer = this.time.addEvent({
+      delay: 26,
+      repeat: text.length - 1,
+      callback: () => {
+        this.dlgBody.setText(text.substring(0, ++i));
+        if (i >= text.length) {
+          this.dlg.typing = false;
+          this.dlgHint.setVisible(true);
+        }
+      },
+    });
+  }
+
+  _finishTyping() {
+    if (this.dlg.timer) this.dlg.timer.remove(false);
+    this.dlgBody.setText(this.dlg.full);
+    this.dlg.typing = false;
+    this.dlgHint.setVisible(true);
+  }
+
+  _nextLine() {
+    this.dlg.index++;
+    if (this.dlg.index < this.dlg.lines.length) {
+      this._showLine(this.dlg.lines[this.dlg.index]);
+    } else {
+      this._endDialogue();
+    }
+  }
+
+  _endDialogue() {
+    if (this.dlg.timer) this.dlg.timer.remove(false);
+    this.dlg.active = false;
+    this._dlgElems.forEach(e => e.setVisible(false));
+    this.dlgBody.setText('');
+    this.dlgName.setText('');
+    this.dlgRule.clear();
+  }
+
+  // ── Update loop ───────────────────────────────────────────────────────────────
+  update() {
+    if (this.dlg.active) {
+      this.player.setVelocity(0, 0);
+      return;
+    }
+
+    const SPEED = 165;
+    let vx = 0, vy = 0;
+    if (this.keys.left.isDown)  vx -= SPEED;
+    if (this.keys.right.isDown) vx += SPEED;
+    if (this.keys.up.isDown)    vy -= SPEED;
+    if (this.keys.down.isDown)  vy += SPEED;
+    if (vx !== 0 && vy !== 0) { vx *= 0.7071; vy *= 0.7071; }
+    this.player.setVelocity(vx, vy);
+
+    // Animation
+    const ax = Math.abs(vx), ay = Math.abs(vy);
+    if      (vx < 0 && ax >= ay) this.player.anims.play('p_left',  true);
+    else if (vx > 0 && ax >= ay) this.player.anims.play('p_right', true);
+    else if (vy < 0)              this.player.anims.play('p_up',    true);
+    else if (vy > 0)              this.player.anims.play('p_down',  true);
+    else                          this.player.anims.play('p_idle',  true);
+
+    // Y-based depth sort
+    this.player.setDepth(10 + this.player.y / 100);
+    this.npcs.forEach(npc => {
+      npc.setDepth(10 + npc.y / 100);
+      npc.nameTag.setDepth(400);
+    });
+
+    // NPC proximity + interaction trigger
+    let closest = null, closestDist = 90;
+    this.npcs.forEach(npc => {
+      const d = Phaser.Math.Distance.Between(
+        this.player.x, this.player.y, npc.x, npc.y
+      );
+      if (d < closestDist) { closestDist = d; closest = npc; }
+    });
+
+    if (closest) {
+      this.promptText.setPosition(closest.x, closest.y - 52).setVisible(true);
+      if (Phaser.Input.Keyboard.JustDown(this.keys.interact))
+        this._startDialogue(closest);
+    } else {
+      this.promptText.setVisible(false);
+    }
+  }
+}
+
+
+// =============================================================================
+//  PHASER CONFIG
+// =============================================================================
+new Phaser.Game({
+  type:            Phaser.AUTO,
+  width:           800,
+  height:          600,
+  backgroundColor: '#03020a',
+  scale: {
+    mode:       Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
+  physics: {
+    default: 'arcade',
+    arcade:  { gravity: { y: 0 }, debug: false },
+  },
+  scene: [PreloadScene, TitleScene, GameScene],
+});
+</script>
+</body>
+</html>
